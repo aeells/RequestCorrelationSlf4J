@@ -13,9 +13,11 @@
  */
 package org.force66.correlate;
 
+import com.aeells.ThreadStateConcurrencyStrategy;
+import com.netflix.hystrix.Hystrix;
+import com.netflix.hystrix.strategy.HystrixPlugins;
+import com.netflix.hystrix.strategy.concurrency.HystrixRequestContext;
 import org.apache.commons.lang3.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import javax.servlet.Filter;
@@ -48,14 +50,15 @@ public class RequestCorrelationFilter implements Filter
 
     public static final String INIT_PARM_LOGGER_NDC_NAME = "logger.mdc.name";
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(RequestCorrelationFilter.class);
-
     private String correlationHeaderName;
 
     private String loggerMdcName;
 
     public void init(FilterConfig filterConfig) throws ServletException
     {
+        Hystrix.reset();
+        HystrixPlugins.getInstance().registerConcurrencyStrategy(new ThreadStateConcurrencyStrategy());
+
         String headerName = filterConfig.getInitParameter(INIT_PARM_CORRELATION_ID_HEADER);
         if (StringUtils.isEmpty(headerName))
         {
@@ -79,6 +82,8 @@ public class RequestCorrelationFilter implements Filter
 
     public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException
     {
+        final HystrixRequestContext context = HystrixRequestContext.initializeContext();
+
         HttpServletRequest httpServletRequest = (HttpServletRequest) request;
         String correlationId = httpServletRequest.getHeader(correlationHeaderName);
         if (StringUtils.isEmpty(correlationId))
@@ -88,21 +93,17 @@ public class RequestCorrelationFilter implements Filter
 
         RequestCorrelationContext.getCurrent().setCorrelationId(correlationId);
         MDC.put(loggerMdcName, correlationId);
-        LOGGER.debug("Correlation id={} request={}", correlationId, httpServletRequest.getPathInfo());
 
         try
         {
-            final MutableHttpServletRequest requestWrapper = new MutableHttpServletRequest(httpServletRequest);
-            requestWrapper.putHeader(correlationHeaderName, correlationId);
-
-            chain.doFilter(requestWrapper, response);
+            chain.doFilter(httpServletRequest, response);
         }
         finally
         {
             MDC.remove(loggerMdcName);
             RequestCorrelationContext.clearCurrent();
+            context.shutdown();
         }
-
     }
 
     public void destroy()
